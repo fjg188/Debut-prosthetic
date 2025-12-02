@@ -3,94 +3,141 @@
 #include <Adafruit_HDC302x.h>
 #include <Adafruit_Sensor.h>
 
-// Create HDC3022 sensor object
+// PWM pin for fan control via MOSFET
+const int FAN_PWM_PIN = 12;  // D12 connected to MOSFET gate
+
+// HDC3022 sensor object
 Adafruit_HDC302x hdc3022 = Adafruit_HDC302x();
 
-// Structure to hold temperature/fan speed data points
+// Temperature/fan speed data points
 struct FanCurvePoint {
   float temperature;  // Temperature in Celsius
   float fanSpeed;     // Fan speed from 0.0 to 1.0 (0% to 100%)
 };
 
-// Fan curve data stored in program memory
-// Format: {temperature, fanSpeed}
-const FanCurvePoint fanCurve[] PROGMEM = {
-  {30.0, 0.00},
-  {40.0, 0.20},
-  {50.0, 0.35},
-  {60.0, 0.50},
-  {70.0, 0.70},
-  {80.0, 0.85},
-  {90.0, 1.00}
-};
+// Fan curve data - loaded from CSV at startup
+#define MAX_CURVE_POINTS 20  // Maximum number of curve points
+FanCurvePoint fanCurve[MAX_CURVE_POINTS];
+int numCurvePoints = 0;  // Actual number of points loaded
 
-const int numCurvePoints = sizeof(fanCurve) / sizeof(FanCurvePoint);
+// CSV data embedded in program memory (from fan_curve.csv)
+const char csvData[] PROGMEM = 
+"30,0.00\n"
+"40,0.20\n"
+"50,0.35\n"
+"60,0.50\n"
+"70,0.70\n"
+"80,0.85\n"
+"90,1.00\n";
 
-// Function to get fan speed for a given temperature using linear interpolation
+// Parse CSV data and load into fanCurve array
+void loadFanCurveFromCSV() {
+  char buffer[256];
+  strcpy_P(buffer, csvData);  // Copy CSV data from program memory
+  
+  char* line = strtok(buffer, "\n");
+  numCurvePoints = 0;
+  
+  // read each line of CSV
+  while (line != NULL && numCurvePoints < MAX_CURVE_POINTS) {
+    
+    // read temperature and fan speed from CSV line
+    float temp, speed;
+    if (sscanf(line, "%f,%f", &temp, &speed) == 2) {
+      fanCurve[numCurvePoints].temperature = temp;
+      fanCurve[numCurvePoints].fanSpeed = speed;
+      numCurvePoints++;
+    }
+    
+    line = strtok(NULL, "\n");
+  }
+  
+  Serial.print("Loaded ");
+  Serial.print(numCurvePoints);
+  Serial.println(" fan curve points from CSV");
+}
+
+// Get fan speed for a given temperature using linear interpolation
 float getFanSpeed(float currentTemp) {
+  if (numCurvePoints == 0) return 0.0;  // No curve loaded
+  
   // If temperature is below minimum, return minimum fan speed
-  if (currentTemp <= pgm_read_float(&fanCurve[0].temperature)) {
-    return pgm_read_float(&fanCurve[0].fanSpeed);
+  if (currentTemp <= fanCurve[0].temperature) {
+    return fanCurve[0].fanSpeed;
   }
   
   // If temperature is above maximum, return maximum fan speed
-  if (currentTemp >= pgm_read_float(&fanCurve[numCurvePoints - 1].temperature)) {
-    return pgm_read_float(&fanCurve[numCurvePoints - 1].fanSpeed);
+  if (currentTemp >= fanCurve[numCurvePoints - 1].temperature) {
+    return fanCurve[numCurvePoints - 1].fanSpeed;
   }
   
-  // Find the two points to interpolate between
+  // Find the two points closest points 
   for (int i = 0; i < numCurvePoints - 1; i++) {
-    float temp1 = pgm_read_float(&fanCurve[i].temperature);
-    float temp2 = pgm_read_float(&fanCurve[i + 1].temperature);
+    float temp1 = fanCurve[i].temperature;
+    float temp2 = fanCurve[i + 1].temperature;
     
     if (currentTemp >= temp1 && currentTemp <= temp2) {
-      // Linear interpolation
-      float speed1 = pgm_read_float(&fanCurve[i].fanSpeed);
-      float speed2 = pgm_read_float(&fanCurve[i + 1].fanSpeed);
+      // midpoint between two points
+      float speed1 = fanCurve[i].fanSpeed;
+      float speed2 = fanCurve[i + 1].fanSpeed;
       
       float ratio = (currentTemp - temp1) / (temp2 - temp1);
       return speed1 + ratio * (speed2 - speed1);
     }
   }
   
-  // Fallback (should never reach here)
+  // Fallback 
   return 0.0;
 }
 
-// Function to print the fan curve to Serial
+// Set the fan speed using PWM (0.0 to 1.0 range)
+void setFanSpeed(float speed) {
+  // Clamp speed between 0.0 and 1.0
+  if (speed < 0.0) speed = 0.0;
+  if (speed > 1.0) speed = 1.0;
+  
+  // Convert speed (0.0-1.0) to PWM value (0-255)
+  int pwmValue = (int)(speed * 255);
+  
+  // Write PWM signal to MOSFET gate
+  analogWrite(FAN_PWM_PIN, pwmValue);
+}
+
+// Print the loaded fan curve to Serial
 void printFanCurve() {
   Serial.println("Fan Cooling Curve:");
   Serial.println("Temp (C)\tFan Speed");
   Serial.println("------------------------");
   
   for (int i = 0; i < numCurvePoints; i++) {
-    float temp = pgm_read_float(&fanCurve[i].temperature);
-    float speed = pgm_read_float(&fanCurve[i].fanSpeed);
-    
-    Serial.print(temp, 1);
+    Serial.print(fanCurve[i].temperature, 1);
     Serial.print("\t\t");
-    Serial.println(speed, 2);
+    Serial.println(fanCurve[i].fanSpeed, 2);
   }
   Serial.println();
 }
 
 void setup() {
-  // Initialize serial communication
   Serial.begin(9600);
   while (!Serial) {
-    ; // Wait for serial port to connect
   }
   
   Serial.println("\n=== Fan Curve System ===");
   
-  // Initialize I2C communication
+  // Load fan curve from CSV data
+  loadFanCurveFromCSV();
+  
+  // Configure PWM pin for fan control
+  pinMode(FAN_PWM_PIN, OUTPUT);
+  setFanSpeed(0.0);  
+
   Wire.begin();
   
-  // Initialize HDC3022 sensor
+  // Initialize  sensor
   if (!hdc3022.begin(0x44, &Wire)) {
     Serial.println("ERROR: Could not find HDC3022 sensor!");
     Serial.println("Check wiring: SDA and SCL connections");
-    while (1) delay(10); // Halt if sensor not found
+    while (1) delay(10); 
   }
   
   Serial.println("HDC3022 sensor initialized successfully!");
@@ -99,7 +146,7 @@ void setup() {
   // Print the loaded fan curve
   printFanCurve();
   
-  // Test the interpolation function with various temperatures
+  // Test 
   Serial.println("Testing fan speed interpolation:");
   Serial.println("Temp (C)\tFan Speed");
   Serial.println("------------------------");
@@ -118,7 +165,7 @@ void setup() {
 }
 
 void loop() {
-  // Read temperature and humidity from HDC3022 sensor
+  // Read temperature and humidity from  sensor
   double temp = 0.0;
   double RH = 0.0;
   
@@ -129,6 +176,9 @@ void loop() {
   
   // Calculate the required fan speed based on current temperature
   float requiredFanSpeed = getFanSpeed(currentTemp);
+  
+  // Control the fan via PWM based on calculated speed
+  setFanSpeed(requiredFanSpeed);
   
   // Print sensor readings and fan speed
   Serial.print("Temperature: ");
@@ -143,6 +193,6 @@ void loop() {
   Serial.print(requiredFanSpeed * 100, 0);
   Serial.println(" %");
   
-  // Update every 2 seconds
+  // Update every 2 sxeconds
   delay(2000);
 }
