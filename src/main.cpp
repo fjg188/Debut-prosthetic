@@ -2,6 +2,7 @@
 #include <Wire.h>
 #include <Adafruit_HDC302x.h>
 #include <Adafruit_Sensor.h>
+#include "fan_curve_data.h"  // Auto-generated from CSV file
 
 // PWM pin for fan control via MOSFET
 const int FAN_PWM_PIN = 12;  // D12 connected to MOSFET gate
@@ -20,15 +21,7 @@ struct FanCurvePoint {
 FanCurvePoint fanCurve[MAX_CURVE_POINTS];
 int numCurvePoints = 0;  // Actual number of points loaded
 
-// CSV data embedded in program memory (from fan_curve.csv)
-const char csvData[] PROGMEM = 
-"30,0.00\n"
-"40,0.20\n"
-"50,0.35\n"
-"60,0.50\n"
-"70,0.70\n"
-"80,0.85\n"
-"90,1.00\n";
+// CSV data is now loaded from fan_curve_data.h (auto-generated from data/fan_curve.csv)
 
 // Parse CSV data and load into fanCurve array
 void loadFanCurveFromCSV() {
